@@ -1,0 +1,348 @@
+app: user-service
+service: user-service
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-offline
+  - serverless-latest-layer-version
+  - serverless-domain-manager
+
+custom:
+  customDomain:
+    domainName: ${self:provider.stage}-api.sendwell.com
+    stage: ${self:provider.stage}
+    basePath: user
+    certificateName: '*.sendwell.com'
+    createRoute53Record: false
+    endpointType: 'regional'
+    securityPolicy: tls_1_2
+    autoDomain: false
+  adminUrl:
+    dev: http://localhost:3000
+    test: http://localhost:3000
+    prod: http://localhost:3000
+  authorizer:
+    arn: arn:aws:lambda:${self:provider.region}:${ssm:sendwell-account-id}:function:auth-service-${self:provider.stage}-authorizer
+    resultTtlInSeconds: 0
+  dynamodb:
+    seed:
+      usersSeed:
+        table: user-service-${self:provider.stage}
+        sources:
+          - src/seed/users.json
+
+
+provider:
+  name: aws
+  runtime: nodejs14.x
+  memorySize: 512 #MB
+  stage: ${opt:stage, 'dev'}
+  region: us-east-2
+  timeout: 30
+
+  apiGateway:
+    shouldStartNameWithService: true
+    binaryMediaTypes:
+      - 'image/png'
+      - 'image/jpeg'
+
+  environment:
+    LOG_LEVEL: silly
+    STAGE: ${self:provider.stage}
+    REGION: ${self:provider.region}
+    DDB_TABLE: user-service-${self:provider.stage}
+    AWS_API_VERSION: '2012-08-10'
+    KMS_KEY_ID_AUTH: ${ssm:kms-key-id-auth}
+    KMS_KEY_ID_PASSWORD: ${ssm:kms-key-id-password}
+    SENDWELL_SUPPORT_EMAIL: ${ssm:sendwell-support-email}
+    OTP_EXPIRATION_MINUTES: 15
+
+  layers:
+    - arn:aws:lambda:${self:provider.region}:${ssm:sendwell-account-id}:layer:lambda-layer-${self:provider.stage}:latest
+
+  iamRoleStatements:
+    # dynamodb
+    - Effect: Allow
+      Action:
+        - dynamodb:DescribeTable
+        - dynamodb:Query
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DeleteItem
+      Resource:
+        - arn:aws:dynamodb:${self:provider.region}:${ssm:sendwell-account-id}:table/${self:provider.environment.DDB_TABLE}
+    
+    # kms for authorization
+    - Effect: Allow
+      Action:
+        - kms:Sign
+        - kms:Verify
+      Resource:
+        - arn:aws:kms:${self:provider.region}:${ssm:sendwell-account-id}:key/${self:provider.environment.KMS_KEY_ID_AUTH}
+
+    # kms for encryption and decryption of user passwords
+    - Effect: Allow
+      Action:
+        - kms:Encrypt
+        - kms:Decrypt
+      Resource:
+        - arn:aws:kms:${self:provider.region}:${ssm:sendwell-account-id}:key/${self:provider.environment.KMS_KEY_ID_PASSWORD}
+    
+    # kinesis
+    - Effect: Allow
+      Action:
+        - kinesis:PutRecord
+      Resource:
+        - arn:aws:kinesis:${self:provider.region}:${ssm:sendwell-account-id}:stream/create-new-user-stream
+        - arn:aws:kinesis:${self:provider.region}:${ssm:sendwell-account-id}:stream/forgot-password-stream
+        - arn:aws:kinesis:${self:provider.region}:${ssm:sendwell-account-id}:stream/change-password-stream
+        - arn:aws:kinesis:${self:provider.region}:${ssm:sendwell-account-id}:stream/resend-forgot-password-stream
+
+    # s3 profile images
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+      Resource:
+        - arn:aws:s3:::sendwell-profile-images-${self:provider.stage}/*
+    
+    # invoke permissions of other lambda functions
+    - Effect: Allow
+      Action:
+        - lambda:InvokeFunction
+      Resource:
+        - arn:aws:lambda:${self:provider.region}:${ssm:sendwell-account-id}:function:role-service-${self:provider.stage}-getRoleInfo
+
+    - Effect: Allow
+      Action:
+        - iam:createRole
+      Resource: arn:aws:iam::${ssm:sendwell-account-id}:role/${self:service}-${self:provider.stage}-${self:provider.region}-lambdaRole
+
+package:
+  exclude:
+    - .vscode/**
+    - node_modules/**
+
+functions:
+  addUser:
+    handler: src/addUser/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /add
+          method: POST
+          cors: true
+ 
+  setProfileImage:
+    handler: src/setProfileImage/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /setProfileImage
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  updateUser:
+    handler: src/updateUser/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /update
+          method: PUT
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  changePassword:
+    handler: src/changePassword/lambda.handler
+    events:
+      - http:
+          # authorizer: ${self:custom.authorizer}
+          path: /changePassword
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  forgotPassword:
+    handler: src/forgotPassword/lambda.handler
+    events:
+      - http:
+          # authorizer: ${self:custom.authorizer}
+          path: /forgotPassword
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  resetPassword:
+    handler: src/resetPassword/lambda.handler
+    events:
+      - http:
+          # authorizer: ${self:custom.authorizer}
+          path: /resetPassword
+          method: PATCH
+          cors: true 
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  verifyForgotPassword:
+    handler: src/verifyForgotPassword/lambda.handler
+    events:
+      - http:
+          # authorizer: ${self:custom.authorizer}
+          path: /forgotPassword/verify
+          method: PATCH
+          cors: true 
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  resendForgotPassword:
+    handler: src/resendForgotPassword/lambda.handler
+    events:
+      - http:
+          # authorizer: ${self:custom.authorizer}
+          path: /forgotPassword/resend
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  deactivateUser:
+    handler: src/deactivateUser/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /deactivate
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  reactivateUser:
+    handler: src/reactivateUser/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /reactivate
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  getAllUsers:
+    handler: src/getAllUsers/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /get
+          method: GET
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                limit: false
+                keyword: false
+                nextKey: false
+
+  getUserInfo:
+    handler: src/getUserInfo/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /info
+          method: GET
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+  authenticate:
+    handler: src/authenticate/lambda.handler
+    events:
+      - http:
+          path: /authenticate
+          method: POST
+          cors: true
+
+  verifyTotp:
+    handler: src/verifyTotp/lambda.handler
+    events:
+      - http:
+          authorizer: ${self:custom.authorizer}
+          path: /verify-totp
+          method: post
+          cors: true
+
+  generateTotp:
+    handler: src/generateTotp/lambda.handler
+    events:
+      - http:
+          path: /generate-totp
+          authorizer: ${self:custom.authorizer}
+          method: post
+          cors: true
+
+  regenerateTotp:
+    handler: src/regenerateTOTP/lambda.handler
+    events:
+      - http:
+          path: /regenerate-totp
+          authorizer: ${self:custom.authorizer}
+          method: PATCH
+          cors: true
+          request:
+            parameters:
+              querystrings:
+                email: true
+
+resources:
+  Resources:
+    UserServiceDynamoDBTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.DDB_TABLE}
+        AttributeDefinitions:
+          - AttributeName: dataset
+            AttributeType: S
+          - AttributeName: sort
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: dataset
+            KeyType: HASH #partition key
+          - AttributeName: sort
+            KeyType: RANGE #sort key
+        GlobalSecondaryIndexes:
+          - IndexName: GSI_Dataset_ID
+            KeySchema:
+            - AttributeName: dataset
+              KeyType: HASH #partition key
+            - AttributeName: id
+              KeyType: RANGE #sort key
+            Projection:
+              ProjectionType: 'ALL'

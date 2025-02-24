@@ -1,0 +1,16 @@
+version: 0.2
+
+phases:
+  pre_build:
+    on-failure: ABORT
+    commands:
+      - echo "Installing source NPM dependencies..."
+      - npm install
+  build:
+    on-failure: ABORT
+    commands:
+      - echo "Build started on `date`"
+      - node ./node_modules/serverless/bin/serverless.js deploy -s $STAGE --verbose
+  post_build:
+    commands:
+      - echo Build completed on `date`
